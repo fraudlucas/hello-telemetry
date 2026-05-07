@@ -25,6 +25,9 @@ services:
       - "${JMX_RMI_PORT}:1099"
     environment:
       - JAVA_OPTS=-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=${JMX_PORT} -Dcom.sun.management.jmxremote.rmi.port=${JMX_RMI_PORT} -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=localhost
+      - JAVA_TOOL_OPTIONS=-javaagent:/opt/opentelemetry-javaagent.jar
+      - OTEL_SERVICE_NAME=ht-tomcat-service
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://ht-otel-collector:4318
     depends_on:
       - ht-mysql
       - ht-python-service
