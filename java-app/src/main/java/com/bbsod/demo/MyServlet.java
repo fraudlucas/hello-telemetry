@@ -1,10 +1,5 @@
 package com.bbsod.demo;
 
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServlet;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.sql.Connection;
@@ -12,22 +7,98 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.LongCounter;
+import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.metrics.SdkMeterProvider;
+import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader;
+import io.opentelemetry.sdk.resources.Resource;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 public class MyServlet extends HttpServlet {
 
+    private static final String OTEL_ATTRIBUTE_SERVICE_NAME = "service.name";
+
+    private static final String SERVICE_NAME = "ht-tomcat-service";
+
+    private static final String OTLP_GRPC_EXPORTER_ENDPOINT = "http://ht-otel-collector:4317";
+
+    private static final Long OTEL_METER_INTERVAL_SECONDS = 10L;
+
+    private static final String INSTRUMENTATION_SCOPE_NAME = MyServlet.class.getName();
+    private static final String METRIC_NAME = "app.db.db_requests"; // Look the semantic convention to avoid conflict.
+    private static final String METRIC_DESCRIPTION = "Count DB requests";
+
+    private final Meter otelMeter;
+    private final LongCounter requestCounter;
+
     // Constructor
     public MyServlet() {
+
+        OpenTelemetry otel = initOpenTelemetry();
+
+        this.otelMeter = otel.getMeter(INSTRUMENTATION_SCOPE_NAME);
+
+        LongCounter counterMetric = this.otelMeter.counterBuilder(METRIC_NAME)
+                .setDescription(METRIC_DESCRIPTION)
+                .build();
+
+        this.requestCounter = counterMetric;
+
+    }
+
+    private static OpenTelemetry initOpenTelemetry() {
+
+        // Resource service.name setup
+        Attributes otelAttributes = Attributes.of(
+                AttributeKey.stringKey(OTEL_ATTRIBUTE_SERVICE_NAME), SERVICE_NAME);
+
+        Resource otelResource = Resource.create(otelAttributes);
+
+        // OTLP Exporter setup
+        OtlpGrpcMetricExporter otlpGrpcMetricExporter = OtlpGrpcMetricExporter.builder()
+                .setEndpoint(OTLP_GRPC_EXPORTER_ENDPOINT)
+                .build();
+
+        // Metric reader setup
+        PeriodicMetricReader otelPeriodicMetricReader = PeriodicMetricReader.builder(otlpGrpcMetricExporter)
+                .setInterval(Duration.ofSeconds(OTEL_METER_INTERVAL_SECONDS))
+                .build();
+
+        // Otel Meter Provider setup
+        SdkMeterProvider otelSdkMeterProvider = SdkMeterProvider.builder()
+                .addResource(otelResource)
+                .registerMetricReader(otelPeriodicMetricReader)
+                .build();
+
+        // Otel SDK setup.
+        OpenTelemetrySdk otelSdk = OpenTelemetrySdk.builder()
+                .setMeterProvider(otelSdkMeterProvider)
+                .build();
+
+        // Cleanup
+        Runtime.getRuntime().addShutdownHook(new Thread(otelSdkMeterProvider::close));
+
+        return otelSdk; // OpenTelemetrySdk implements OpenTelemetry interface.
     }
 
     @Override
@@ -66,6 +137,8 @@ public class MyServlet extends HttpServlet {
             // Execute a query
             String query = "SELECT * FROM mytable";
             ResultSet resultSet = statement.executeQuery(query);
+
+            this.requestCounter.add(1);
 
             // Build web page
             out.println("<html><body>");
@@ -117,8 +190,8 @@ public class MyServlet extends HttpServlet {
             StringEntity entity = new StringEntity(requestData.toString());
             httpPost.setEntity(entity);
 
-            String responseString = httpClient.execute(httpPost, response ->
-                    EntityUtils.toString(response.getEntity()));
+            String responseString = httpClient.execute(httpPost,
+                    response -> EntityUtils.toString(response.getEntity()));
             JSONObject responseJson = new JSONObject(responseString);
             return responseJson.get("average_age").toString();
         }
