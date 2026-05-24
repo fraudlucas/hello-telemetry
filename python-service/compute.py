@@ -1,11 +1,13 @@
 from flask import Flask, request, jsonify
 
-from opentelemetry import metrics
+from opentelemetry import metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
 APP_SERVICE_NAME = "ht-python-service"
 OTEL_ATTRIBUTE_SERVICE_NAME = "service.name"
@@ -19,6 +21,7 @@ OTEL_CUSTOM_METRIC_DESCRIPTION = "Counts the requests to compute-service"
 otel_resource = Resource.create({OTEL_ATTRIBUTE_SERVICE_NAME: APP_SERVICE_NAME})
 
 # Metrics setup: exporter, metric reader, meter provider
+
 otlp_metric_exporter = OTLPMetricExporter(
     endpoint=OTLP_GRPC_EXPORTER_ENDPOINT, insecure=True
 )
@@ -40,6 +43,21 @@ otel_compute_request_count = otel_meter.create_counter(
     description=OTEL_CUSTOM_METRIC_DESCRIPTION,
 )
 
+# Traces setup: span exporter, span processor, tracer provider
+
+otlp_span_exporter = OTLPSpanExporter(
+    endpoint=OTLP_GRPC_EXPORTER_ENDPOINT, insecure=True
+)
+
+otel_span_processor = BatchSpanProcessor(otlp_span_exporter)
+
+otel_tracer_provider = TracerProvider(resource=otel_resource)
+otel_tracer_provider.add_span_processor(otel_span_processor)
+
+trace.set_tracer_provider(otel_tracer_provider)
+
+otel_tracer = trace.get_tracer(OTEL_INSTRUMENTATION_SCOPE_NAME)
+
 
 app = Flask(__name__)
 
@@ -49,18 +67,21 @@ def compute_average_age():
     # Increment compute_request_count
     otel_compute_request_count.add(1)
 
-    # Process the request data
-    data = request.json['data']
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    
-    # Extract ages from the data
-    ages = [item['age'] for item in data if 'age' in item]
-    if not ages:
-        return jsonify({'error': 'No age data available'}), 400
-    
-    # Compute the average age
-    average_age = round(sum(ages) / len(ages), 1)
+    # Starting a new span
+    with otel_tracer.start_as_current_span("Compute Average Span"):
+
+        # Process the request data
+        data = request.json["data"]
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        # Extract ages from the data
+        ages = [item["age"] for item in data if "age" in item]
+        if not ages:
+            return jsonify({"error": "No age data available"}), 400
+
+        # Compute the average age
+        average_age = round(sum(ages) / len(ages), 1)
 
     return jsonify({'average_age': average_age})
 
