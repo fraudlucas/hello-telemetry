@@ -24,11 +24,16 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
+import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.metrics.SdkMeterProvider;
 import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader;
 import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
@@ -50,6 +55,7 @@ public class MyServlet extends HttpServlet {
 
     private final Meter otelMeter;
     private final LongCounter requestCounter;
+    private final Tracer otelTracer;
 
     // Constructor
     public MyServlet() {
@@ -64,6 +70,8 @@ public class MyServlet extends HttpServlet {
 
         this.requestCounter = counterMetric;
 
+        this.otelTracer = otel.getTracer(INSTRUMENTATION_SCOPE_NAME);
+
     }
 
     private static OpenTelemetry initOpenTelemetry() {
@@ -73,6 +81,8 @@ public class MyServlet extends HttpServlet {
                 AttributeKey.stringKey(OTEL_ATTRIBUTE_SERVICE_NAME), SERVICE_NAME);
 
         Resource otelResource = Resource.create(otelAttributes);
+
+        /* CUSTOM METRIC SETUP */
 
         // OTLP Exporter setup
         OtlpGrpcMetricExporter otlpGrpcMetricExporter = OtlpGrpcMetricExporter.builder()
@@ -90,9 +100,23 @@ public class MyServlet extends HttpServlet {
                 .registerMetricReader(otelPeriodicMetricReader)
                 .build();
 
+        /* CUSTOM SPAN SETUP */
+
+        OtlpGrpcSpanExporter otlpGrpcSpanExporter = OtlpGrpcSpanExporter.builder()
+                .setEndpoint(OTLP_GRPC_EXPORTER_ENDPOINT)
+                .build();
+
+        SimpleSpanProcessor otelSimpleSpanProcessor = SimpleSpanProcessor.builder(otlpGrpcSpanExporter).build();
+
+        SdkTracerProvider sdkTracerProvider = SdkTracerProvider.builder()
+                .addResource(otelResource)
+                .addSpanProcessor(otelSimpleSpanProcessor)
+                .build();
+
         // Otel SDK setup.
         OpenTelemetrySdk otelSdk = OpenTelemetrySdk.builder()
                 .setMeterProvider(otelSdkMeterProvider)
+                .setTracerProvider(sdkTracerProvider)
                 .build();
 
         // Cleanup
@@ -109,14 +133,21 @@ public class MyServlet extends HttpServlet {
         PrintWriter out = response.getWriter();
         response.setContentType("text/html");
 
+        Span otelSleepSpan = this.otelTracer.spanBuilder("Sleep for two seconds").startSpan();
+
         // Sleep for 2 seconds
         try {
             Thread.sleep(2000);
         } catch (InterruptedException e) {
             e.printStackTrace();
+        } finally {
+            otelSleepSpan.end();
         }
 
         // Establish database connection and get data
+        this.requestCounter.add(1);
+
+        Span otelDbSpan = this.otelTracer.spanBuilder("Database Connection").startSpan();
 
         // JDBC connection parameters
         String jdbcUrl = "jdbc:mysql://ht-mysql:3306/mydatabase";
@@ -137,8 +168,6 @@ public class MyServlet extends HttpServlet {
             // Execute a query
             String query = "SELECT * FROM mytable";
             ResultSet resultSet = statement.executeQuery(query);
-
-            this.requestCounter.add(1);
 
             // Build web page
             out.println("<html><body>");
@@ -170,6 +199,8 @@ public class MyServlet extends HttpServlet {
         } catch (Exception e) {
             e.printStackTrace();
             out.println("<h2>Error: " + e.getMessage() + "</h2>");
+        } finally {
+            otelDbSpan.end();
         }
 
         // Make a request to the Python microservice
@@ -180,6 +211,9 @@ public class MyServlet extends HttpServlet {
     }
 
     private String getAverageAge(List<JSONObject> dataList) throws IOException {
+
+        Span otelAverageSpan = this.otelTracer.spanBuilder("Compute Average Age").startSpan();
+
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpPost httpPost = new HttpPost("http://ht-python-service:5000/compute_average_age");
             httpPost.setHeader("Content-Type", "application/json");
@@ -194,6 +228,8 @@ public class MyServlet extends HttpServlet {
                     response -> EntityUtils.toString(response.getEntity()));
             JSONObject responseJson = new JSONObject(responseString);
             return responseJson.get("average_age").toString();
+        } finally {
+            otelAverageSpan.end();
         }
     }
 }
