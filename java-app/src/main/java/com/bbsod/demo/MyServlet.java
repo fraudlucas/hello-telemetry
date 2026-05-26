@@ -25,7 +25,10 @@ import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.exporter.otlp.metrics.OtlpGrpcMetricExporter;
 import io.opentelemetry.exporter.otlp.trace.OtlpGrpcSpanExporter;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
@@ -56,6 +59,8 @@ public class MyServlet extends HttpServlet {
     private final Meter otelMeter;
     private final LongCounter requestCounter;
     private final Tracer otelTracer;
+
+    private Context otelParentContext;
 
     // Constructor
     public MyServlet() {
@@ -120,7 +125,7 @@ public class MyServlet extends HttpServlet {
                 .build();
 
         // Cleanup
-        Runtime.getRuntime().addShutdownHook(new Thread(otelSdkMeterProvider::close));
+        Runtime.getRuntime().addShutdownHook(new Thread(otelSdk::close));
 
         return otelSdk; // OpenTelemetrySdk implements OpenTelemetry interface.
     }
@@ -133,21 +138,59 @@ public class MyServlet extends HttpServlet {
         PrintWriter out = response.getWriter();
         response.setContentType("text/html");
 
-        Span otelSleepSpan = this.otelTracer.spanBuilder("Sleep for two seconds").startSpan();
+        // Parent span for context propagation setup
+        Span otelDoGetSpan = this.otelTracer.spanBuilder("Do Get")
+                .setNoParent()
+                .startSpan();
 
-        // Sleep for 2 seconds
         try {
-            Thread.sleep(2000);
+            otelDoGetSpan.makeCurrent();
+
+            this.otelParentContext = Context.current().with(otelDoGetSpan);
+
+            // Sleep for 2 seconds
+            sleepFor(2000);
+
+            // Establish database connection and get data
+            this.requestCounter.add(1);
+
+            out.println("<html><body>");
+            out.println("<h1>Database Results</h1>");
+
+            getDatabaseResults(dataList, out);
+
+            // Make a request to the Python microservice
+            String averageAge = getAverageAge(dataList);
+
+            out.println("<h2>Average Age: " + averageAge + "</h2>");
+            out.println("</body></html>");
+
+        } finally {
+            otelDoGetSpan.end();
+        }
+
+    }
+
+    private void sleepFor(long millis) {
+        Span otelSleepSpan = this.otelTracer.spanBuilder("Sleep for two seconds")
+                .setSpanKind(SpanKind.INTERNAL)
+                .setParent(this.otelParentContext)
+                .startSpan();
+
+        try {
+            Thread.sleep(millis);
         } catch (InterruptedException e) {
             e.printStackTrace();
         } finally {
             otelSleepSpan.end();
         }
+    }
 
-        // Establish database connection and get data
-        this.requestCounter.add(1);
-
-        Span otelDbSpan = this.otelTracer.spanBuilder("Database Connection").startSpan();
+    private void getDatabaseResults(List<JSONObject> dataList, PrintWriter out) {
+        Span otelDbSpan = this.otelTracer.spanBuilder("Database Connection")
+                .setSpanKind(SpanKind.CLIENT)
+                .setParent(this.otelParentContext)
+                .startSpan();
 
         // JDBC connection parameters
         String jdbcUrl = "jdbc:mysql://ht-mysql:3306/mydatabase";
@@ -170,8 +213,6 @@ public class MyServlet extends HttpServlet {
             ResultSet resultSet = statement.executeQuery(query);
 
             // Build web page
-            out.println("<html><body>");
-            out.println("<h1>Database Results</h1>");
             out.println("<table border='1'>");
             out.println("<tr><th>ID</th><th>Name</th><th>Age</th></tr>");
 
@@ -202,17 +243,16 @@ public class MyServlet extends HttpServlet {
         } finally {
             otelDbSpan.end();
         }
-
-        // Make a request to the Python microservice
-        String averageAge = getAverageAge(dataList);
-        out.println("<h2>Average Age: " + averageAge + "</h2>");
-        out.println("</body></html>");
-
     }
 
     private String getAverageAge(List<JSONObject> dataList) throws IOException {
 
-        Span otelAverageSpan = this.otelTracer.spanBuilder("Compute Average Age").startSpan();
+        Span otelAverageSpan = this.otelTracer.spanBuilder("Compute Average Age")
+                .setSpanKind(SpanKind.CLIENT)
+                .setParent(otelParentContext)
+                .startSpan();
+
+        Context otelAverageContext = Context.current().with(otelAverageSpan);
 
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpPost httpPost = new HttpPost("http://ht-python-service:5000/compute_average_age");
@@ -223,6 +263,10 @@ public class MyServlet extends HttpServlet {
 
             StringEntity entity = new StringEntity(requestData.toString());
             httpPost.setEntity(entity);
+
+            // W3CTraceContext for span context propagation
+            W3CTraceContextPropagator traceContextPropagator = W3CTraceContextPropagator.getInstance();
+            traceContextPropagator.inject(otelAverageContext, httpPost, HttpPost::setHeader);
 
             String responseString = httpClient.execute(httpPost,
                     response -> EntityUtils.toString(response.getEntity()));
