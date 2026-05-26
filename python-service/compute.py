@@ -8,6 +8,7 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExp
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 APP_SERVICE_NAME = "ht-python-service"
 OTEL_ATTRIBUTE_SERVICE_NAME = "service.name"
@@ -64,11 +65,14 @@ app = Flask(__name__)
 @app.route('/compute_average_age', methods=['POST'])
 def compute_average_age():  
 
-    # Increment compute_request_count
-    otel_compute_request_count.add(1)
+    # Extract Otel trace context
+    otel_trace_context = TraceContextTextMapPropagator().extract(request.headers)
 
     # Starting a new span
-    with otel_tracer.start_as_current_span("Compute Average Span"):
+    with otel_tracer.start_as_current_span("Compute Average Span", context=otel_trace_context):
+    
+        # Increment compute_request_count
+        otel_compute_request_count.add(1)
 
         # Process the request data
         data = request.json["data"]
@@ -83,7 +87,7 @@ def compute_average_age():
         # Compute the average age
         average_age = round(sum(ages) / len(ages), 1)
 
-    return jsonify({'average_age': average_age})
+        return jsonify({'average_age': average_age})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
