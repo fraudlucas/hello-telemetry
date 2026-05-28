@@ -16,7 +16,7 @@ RUN opentelemetry-bootstrap -a install
 # Add env vars to set otel collector.
 # Prior to OpenTelemetry Python 1.40.0 you had to enable log instrumentation with:
     # OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
-ENV OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://ht-otel-collector:4317
+ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://ht-otel-collector:4317
 
 # Copy the rest of the application code into the container
 COPY . .
