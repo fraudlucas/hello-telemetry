@@ -22,11 +22,14 @@ import org.slf4j.bridge.SLF4JBridgeHandler;
 
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.baggage.Baggage;
+import io.opentelemetry.api.baggage.propagation.W3CBaggagePropagator;
 import io.opentelemetry.api.metrics.LongCounter;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
@@ -175,6 +178,14 @@ public class MyServlet extends HttpServlet {
                 .setSpanKind(SpanKind.CLIENT)
                 .startSpan();
 
+        // Baggage setup and adding to a context to be propagated
+        Baggage otelBaggage = Baggage.builder()
+                .put("user.id", "101")
+                .put("user.name", "John Doe")
+                .build();
+
+        Context otelContextWithBaggage = Context.current().with(otelBaggage);
+
         try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
             HttpPost httpPost = new HttpPost("http://ht-python-service:5000/compute_average_age");
             httpPost.setHeader("Content-Type", "application/json");
@@ -184,6 +195,9 @@ public class MyServlet extends HttpServlet {
 
             StringEntity entity = new StringEntity(requestData.toString());
             httpPost.setEntity(entity);
+
+            // Propagating the baggage
+            W3CBaggagePropagator.getInstance().inject(otelContextWithBaggage, httpPost, HttpPost::setHeader);
 
             String responseString = httpClient.execute(httpPost,
                     response -> EntityUtils.toString(response.getEntity()));
