@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify
 
-from opentelemetry import metrics, trace
+from opentelemetry import metrics, trace, baggage
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
 
 import logging
 
@@ -39,13 +40,25 @@ app = Flask(__name__)
 @app.route("/compute_average_age", methods=["POST"])
 def compute_average_age():
 
+    # Extract context
+    otel_baggage_context = W3CBaggagePropagator().extract(request.headers)
+
+    otel_baggage_items = baggage.get_all(context=otel_baggage_context)
+
+    # Convert baggage items into a dictionary of attributes
+    otel_attributes = {key: value for key, value in otel_baggage_items.items()}
+
     # Starting a new span
     with otel_tracer.start_as_current_span(name="Compute Average Span"):
 
-        otel_logger.info("Average age compute in progress")
+        otel_logger_with_attributes = logging.LoggerAdapter(otel_logger, otel_attributes)
+        otel_logger_with_attributes.info("Average age compute in progress")
 
-        # Increment compute_request_count
-        otel_compute_request_count.add(1)
+        otel_current_span = trace.get_current_span()
+        otel_current_span.set_attributes(otel_attributes)
+
+        # Increment compute_request_count metric
+        otel_compute_request_count.add(1, otel_attributes)
 
         # Process the request data
         data = request.json["data"]
