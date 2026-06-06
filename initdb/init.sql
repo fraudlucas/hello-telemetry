@@ -8,3 +8,6 @@ INSERT INTO mytable (ID, Name, Age) VALUES
 (1, 'Alice', 25),
 (2, 'Bob', 30),
 (3, 'Charlie', 36);
+
+GRANT SELECT ON performance_schema.* TO 'myuser'@'%';
+FLUSH PRIVILEGES;
